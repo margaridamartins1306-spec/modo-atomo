@@ -1,100 +1,138 @@
-/**
- * Include the Geode headers.
- */
 #include <Geode/Geode.hpp>
+#include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <chrono>
 
-/**
- * Brings cocos2d and all Geode namespaces to the current scope.
- */
 using namespace geode::prelude;
 
-/**
- * `$modify` lets you extend and modify GD's classes.
- * To hook a function in Geode, simply $modify the class
- * and write a new function definition with the signature of
- * the function you want to hook.
- *
- * Here we use the overloaded `$modify` macro to set our own class name,
- * so that we can use it for button callbacks.
- *
- * Notice the header being included, you *must* include the header for
- * the class you are modifying, or you will get a compile error.
- *
- * Another way you could do this is like this:
- *
- * struct MyMenuLayer : Modify<MyMenuLayer, MenuLayer> {};
- */
-#include <Geode/modify/MenuLayer.hpp>
-class $modify(MyMenuLayer, MenuLayer) {
-	/**
-	 * Typically classes in GD are initialized using the `init` function, (though not always!),
-	 * so here we use it to add our own button to the bottom menu.
-	 *
-	 * Note that for all hooks, your signature has to *match exactly*,
-	 * `void init()` would not place a hook!
-	*/
-	bool init() {
-		/**
-		 * We call the original init function so that the
-		 * original class is properly initialized.
-		 */
-		if (!MenuLayer::init()) {
-			return false;
-		}
+struct Particula {
+    CCSprite* sprite = nullptr;
+    float y = 0.f;
+    float vy = 0.f;
+    float offset = 0.f;
+    bool viva = false;
+};
 
-		/**
-		 * You can use methods from the `geode::log` namespace to log messages to the console,
-		 * being useful for debugging and such. See this page for more info about logging:
-		 * https://docs.geode-sdk.org/tutorials/logging
-		*/
-		log::debug("Hello from my MenuLayer::init hook! This layer has {} children.", this->getChildrenCount());
+struct AtomoEstado {
+    bool ativo = false;
+    bool dividido = false;
+    bool segurando = false;
+    std::chrono::steady_clock::time_point ultimoToque{};
+    Particula part[2];
+} g;
 
-		/**
-		 * See this page for more info about buttons
-		 * https://docs.geode-sdk.org/tutorials/buttons
-		*/
-		auto myButton = CCMenuItemSpriteExtra::create(
-			CCSprite::createWithSpriteFrameName("GJ_likeBtn_001.png"),
-			this,
-			/**
-			 * Here we use the name we set earlier for our modify class.
-			*/
-			menu_selector(MyMenuLayer::onMyButton)
-		);
+constexpr float ACEL = 1400.f;
+constexpr float VEL_MAX = 380.f;
+constexpr float DISTANCIA = 55.f;
+constexpr float CHAO_Y = 105.f;
+constexpr float TETO_Y = 405.f;
+constexpr float TAMANHO = 18.f;
+constexpr int JANELA_TOQUE_DUPLO_MS = 250;
 
-		/**
-		 * Here we access the `bottom-menu` node by its ID, and add our button to it.
-		 * Node IDs are a Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/nodetree
-		*/
-		auto menu = this->getChildByID("bottom-menu");
-		menu->addChild(myButton);
+class $modify(AtomoPlayer, PlayerObject) {
+    bool pushButton(PlayerButton btn) {
+        if (g.ativo && btn == PlayerButton::Jump) {
+            g.segurando = true;
+            auto agora = std::chrono::steady_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                agora - g.ultimoToque).count();
+            g.ultimoToque = agora;
 
-		/**
-		 * The `_spr` string literal operator just prefixes the string with
-		 * your mod id followed by a slash. This is good practice for setting your own node ids.
-		*/
-		myButton->setID("my-button"_spr);
+            if (ms < JANELA_TOQUE_DUPLO_MS) {
+                auto pl = PlayLayer::get();
+                if (pl && this == pl->m_player1) {
+                    float cy = this->getPositionY();
+                    g.dividido = !g.dividido;
+                    for (int i = 0; i < 2; i++) {
+                        auto& p = g.part[i];
+                        p.viva = g.dividido;
+                        p.vy = 0.f;
+                        p.offset = (i == 0 ? DISTANCIA : -DISTANCIA);
+                        p.y = cy + p.offset;
+                        if (p.sprite) p.sprite->setVisible(g.dividido);
+                    }
+                }
+            }
+        }
+        return PlayerObject::pushButton(btn);
+    }
 
-		/**
-		 * We update the layout of the menu to ensure that our button is properly placed.
-		 * This is yet another Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/layouts
-		*/
-		menu->updateLayout();
+    bool releaseButton(PlayerButton btn) {
+        if (g.ativo && btn == PlayerButton::Jump) g.segurando = false;
+        return PlayerObject::releaseButton(btn);
+    }
+};
 
-		/**
-		 * We return `true` to indicate that the class was properly initialized.
-		 */
-		return true;
-	}
+class $modify(AtomoPlayLayer, PlayLayer) {
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
 
-	/**
-	 * This is the callback function for the button we created earlier.
-	 * The signature for button callbacks must always be the same,
-	 * return type `void` and taking a `CCObject*`.
-	*/
-	void onMyButton(CCObject*) {
-		FLAlertLayer::create("Geode", "Hello from my custom mod!", "OK")->show();
-	}
+        g = AtomoEstado{};
+        g.ativo = Mod::get()->getSettingValue<bool>("atomo-sempre-ativo");
+        if (!g.ativo) return;
+
+        m_player1->toggleFlyMode(true, false);
+
+        for (int i = 0; i < 2; i++) {
+            auto s = CCSprite::createWithSpriteFrameName("player_01_001.png");
+            if (!s) continue;
+            s->setScale(0.5f);
+            s->setVisible(false);
+            s->setZOrder(100);
+            m_objectLayer->addChild(s);
+            g.part[i].sprite = s;
+        }
+    }
+
+    void resetLevel() {
+        PlayLayer::resetLevel();
+        if (!g.ativo) return;
+        g.dividido = false;
+        g.segurando = false;
+        for (auto& p : g.part) {
+            p.viva = false;
+            if (p.sprite) p.sprite->setVisible(false);
+        }
+        m_player1->toggleFlyMode(true, false);
+    }
+
+    void postUpdate(float dt) {
+        PlayLayer::postUpdate(dt);
+        if (!g.ativo || !g.dividido) return;
+
+        float x = m_player1->getPositionX();
+
+        for (auto& p : g.part) {
+            if (!p.viva || !p.sprite) continue;
+
+            p.vy += (g.segurando ? ACEL : -ACEL) * dt;
+            p.vy = std::clamp(p.vy, -VEL_MAX, VEL_MAX);
+            p.y += p.vy * dt;
+
+            bool quebrou = (p.y < CHAO_Y || p.y > TETO_Y);
+
+            CCRect r(x - TAMANHO / 2, p.y - TAMANHO / 2, TAMANHO, TAMANHO);
+            if (!quebrou) {
+                for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
+                    if (!obj) continue;
+                    if (std::abs(obj->getPositionX() - x) > 60.f) continue;
+                    auto tipo = obj->m_objectType;
+                    if (tipo != GameObjectType::Hazard &&
+                        tipo != GameObjectType::Solid) continue;
+                    if (r.intersectsRect(obj->getObjectRect())) {
+                        quebrou = true;
+                        break;
+                    }
+                }
+            }
+
+            if (quebrou) {
+                p.viva = false;
+                p.sprite->setVisible(false);
+                continue;
+            }
+
+            p.sprite->setPosition({x, p.y});
+        }
+    }
 };
